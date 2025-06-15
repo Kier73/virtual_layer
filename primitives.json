@@ -1,0 +1,17 @@
+{
+  "LOAD": [
+    {"id": "P_LOAD_FAST", "op_type": "LOAD", "steps": ["load fast from source X", "deserialize quickly"], "cost_vector": {"time": 5, "energy": 3, "quality": 0.7, "cpu": 5}},
+    {"id": "P_LOAD_SLOW_RELIABLE", "op_type": "LOAD", "steps": ["load slow from source Y", "verify checksum", "deserialize carefully"], "cost_vector": {"time": 10, "energy": 1, "quality": 0.9, "cpu": 2}}
+  ],
+  "ADD": [
+    {"id": "P_ADD_BASIC_CPU", "op_type": "ADD", "steps": ["basic CPU addition"], "cost_vector": {"time": 2, "energy": 1, "quality": 0.95, "cpu": 2}},
+    {"id": "P_ADD_GPU_ACCELERATED", "op_type": "ADD", "steps": ["transfer to GPU", "GPU add", "transfer from GPU"], "cost_vector": {"time": 4, "energy": 5, "quality": 0.98, "gpu": 10, "cpu": 1}}
+  ],
+  "SAVE": [
+    {"id": "P_SAVE_QUICK_LOCAL", "op_type": "SAVE", "steps": ["serialize quickly", "save to local disk"], "cost_vector": {"time": 3, "energy": 2, "quality": 0.8, "io": 10}},
+    {"id": "P_SAVE_COMPRESSED_REMOTE", "op_type": "SAVE", "steps": ["compress data", "transfer to remote", "verify remote write"], "cost_vector": {"time": 12, "energy": 4, "quality": 0.9, "io": 5, "network": 20}}
+  ],
+  "PROCESS": [
+    {"id": "P_PROCESS_SIMPLE", "op_type": "PROCESS", "steps": ["simple data transformation"], "cost_vector": {"time": 7, "cpu": 10, "mem": 5, "quality": 0.85}}
+  ]
+}

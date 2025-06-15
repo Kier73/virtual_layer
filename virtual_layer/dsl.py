@@ -1,190 +1,76 @@
-from lark import Lark, Transformer, v_args, visitors
-from lark.exceptions import LarkError, UnexpectedToken, VisitError
-import json
+import re
 
-class DSLSyntaxError(SyntaxError):
-    pass
-
-class DSLSemanticError(ValueError):
+class DSLSyntaxError(ValueError): # Ensure this is at the top level of the module
     pass
 
 class DSLCompiler:
-    def __init__(self, grammar_file="virtual_layer/dsl_grammar.lark"):
-        with open(grammar_file, "r") as f:
-            grammar = f.read()
-        # Important: Create a new transformer instance for each parse, or reset it.
-        # Lark might cache the transformer or its state if the same instance is always used.
-        # For simplicity here, we'll rely on the transformer itself to manage its state
-        # if it were to be reused, but typically, you'd pass a new instance or a class.
-        # self.transformer_instance = DSLTransformer() # Re-evaluate if needed for state
-        self.parser = Lark(grammar, parser='lalr', transformer=DSLTransformer(), keep_all_tokens=True)
+    def __init__(self, catalog: set):
+        self.catalog = catalog
+        # Regex captures: OpName, ArgsString (optional), Comment (optional)
+        # ArgsString is the content *inside* the parentheses.
+        # OP_NAME regex changed to ([A-Z_]+) as per subtask refinement.
+        self.op_line_regex = re.compile(
+            r"^\s*([A-Z_]+)\s*"                  # Operation name (Group 1) - Strictly [A-Z_]+
+            r"(?:\(\s*(.*?)\s*\))?\s*"          # Optional arguments in () (Group 2 for content)
+            r"(?:#.*)?$"                        # Optional comment
+        )
 
     def parse(self, code: str) -> dict:
-        # No explicit reset of transformer_instance here, as the new transformer design
-        # will not rely on instance variables populated as side-effects during tree walk,
-        # but rather process children passed to its 'start' method.
-        # print(f"DEBUG: [Compiler] About to call parser.parse() for code: '{code[:30]}...'")
-        try:
-            raw_parse_output = self.parser.parse(code)
-            # print(f"DEBUG: [Compiler] Raw parse output type: {type(raw_parse_output)}, Value: {str(raw_parse_output)[:200]}")
+        parsed_ops = []
+        lines = code.splitlines()
 
-            if isinstance(raw_parse_output, dict) and 'op' in raw_parse_output and 'args' in raw_parse_output:
-                # Single operation was parsed
-                return {'ops': [raw_parse_output], 'vars': {}}
-            elif isinstance(raw_parse_output, tuple) and len(raw_parse_output) == 3 and raw_parse_output[0] == 'var_assign':
-                # Single variable assignment was parsed
-                _, var_name, value = raw_parse_output
-                return {'ops': [], 'vars': {var_name: value}}
-            elif isinstance(raw_parse_output, dict) and 'ops' in raw_parse_output and 'vars' in raw_parse_output:
-                # This is the format from DSLTransformer.start() - for multi-statement or empty/comment-only
-                return raw_parse_output
-            # Handle cases where parse output might be None (e.g. for empty input if grammar/transformer leads to it)
-            # or an empty list (if start rule had only discarded children).
-            elif raw_parse_output is None or (isinstance(raw_parse_output, list) and not raw_parse_output):
-                # Empty or effectively empty input
-                return {'ops': [], 'vars': {}}
-            else:
-                # Unexpected type from parser.parse(). This could also be an empty list if all top children discarded.
-                # print(f"WARN: Unexpected output type {type(raw_parse_output)} from parser.parse() for code '{code[:30]}...'. Value: {str(raw_parse_output)[:100]}. Returning empty dict.")
-                return {'ops': [], 'vars': {}}
-        except UnexpectedToken as e:
-            raise DSLSyntaxError(
-                f"Syntax error: Unexpected token {e.token} at line {e.line}, column {e.column}.\n"
-                f"Expected: {e.expected}"
-            )
-        except VisitError as e:
-            if isinstance(e.orig_exc, DSLSemanticError):
-                raise e.orig_exc
-            raise DSLSemanticError(f"Error during DSL processing: {e.orig_exc} (from rule: {e.rule if hasattr(e, 'rule') else 'unknown'})")
-        except LarkError as e:
-            # Handle cases where input is empty or whitespace only, which might lead to IncompleteParseError
-            # depending on the strictness of the grammar's start rule.
-            # The current grammar `?start: (statement | NEWLINE)*` should accept empty input.
-            if not code.strip(): # If code is empty or only whitespace
-                 return {'ops': [], 'vars': {}}
-            raise DSLSyntaxError(f"Failed to parse DSL code: {e}")
+        for line_num, line_content in enumerate(lines, 1):
+            stripped_line = line_content.strip()
 
-
-class DSLTransformer(Transformer):
-    # No __init__ needed if not maintaining state between parse calls on the instance itself.
-    # Lark creates a new tree and applies this transformer logic.
-
-    # ?start: (statement | NEWLINE)*
-    def start(self, children):
-        print(f"DEBUG: [Transformer] start() called. Children count: {len(children)}") # Critical Print
-        vars_dict = {}
-        ops_list = []
-        for child_idx, child in enumerate(children):
-            # Print type of each child being processed by start()
-            # print(f"DEBUG: [Transformer] start() processing child {child_idx}, type: {type(child)}, value: {str(child)[:100]}")
-            if child is visitors.Discard or child is None: # Explicitly check for Discard too
+            if not stripped_line or stripped_line.startswith('#'):
                 continue
 
-            # Child should be the direct result of 'statement' rule transformation
-            # which in turn is the result of 'assignment' or 'operation'
-            if isinstance(child, tuple) and child[0] == 'var_assign':
-                _, var_name, value = child
-                vars_dict[var_name] = value
-            elif isinstance(child, dict) and 'op' in child:
-                ops_list.append(child)
-            # else:
-                # print(f"DEBUG: [Transformer] start(): Unexpected child type: {type(child)}, value: {child}")
+            match = self.op_line_regex.match(stripped_line)
 
-        print(f"DEBUG: [Transformer] start() finalizing. Vars: {json.dumps(vars_dict)}, Ops: {json.dumps(ops_list)}") # Critical Print
-        return {'ops': ops_list, 'vars': vars_dict}
+            if not match:
+                # Specific check for "VAR" lines, which are not supported
+                if stripped_line.upper().startswith("VAR"):
+                    raise DSLSyntaxError(
+                        f"Malformed DSL at line {line_num}: VAR assignments are not supported. Problematic line: '{line_content}'"
+                    )
+                # Check if it looks like an attempt at an op name but failed regex (e.g. lowercase)
+                # This part might be tricky to make perfect without more complex regex/lexing
+                # For now, any non-match that isn't a comment/empty/VAR is malformed.
+                if stripped_line:
+                    raise DSLSyntaxError(f"Malformed DSL at line {line_num}: Invalid operation format. Problematic line: '{line_content}'")
+                continue
 
-    # statement: assignment | operation | COMMENT
-    # This will return the result of assignment/operation, or Discard for COMMENT
-    @v_args(inline=True) # Process children of statement (assgn/op/comment) then pass result
-    def statement(self,  stmt_result):
-        # print(f"DEBUG: [Transformer] statement() received: {type(stmt_result)}, value: {str(stmt_result)[:100]}") # Critical Print
-        return stmt_result # stmt_result is output of assignment, operation, or COMMENT methods
 
-    def COMMENT(self, token):
-        return visitors.Discard # Remove comments entirely
+            op_name = match.group(1)
+            args_str = match.group(2)
 
-    # assignment: "VAR" NAME "=" value
-    @v_args(inline=True)
-    def assignment(self, var_keyword, name_token, eq_token, value_result):
-        var_name = str(name_token)
-        # value_result is already processed by the 'value' method
-        # print(f"DEBUG: [Transformer] assignment: Name={var_name}, Value={value_result}")
-        return ('var_assign', var_name, value_result) # Return a tuple indicating assignment
+            if op_name not in self.catalog:
+                # Adhere to specified error message format from prompt
+                raise ValueError(f"Unknown op: {op_name}")
 
-    # operation: NAME atom*
-    @v_args(inline=False)
-    def operation(self, items):
-        op_name_token = items[0]
-        op_name = str(op_name_token)
+            op_args = []
+            if args_str is not None: # Parentheses were present "OP(...)"
+                # If args_str is an empty string (from "OP()"), strip() makes it empty.
+                # If args_str is "   " (from "OP(   )"), strip() also makes it empty.
+                # Both should result in op_args = []
+                if args_str.strip():
+                    # Check for malformed comma usage before splitting
+                    if args_str.startswith(',') or args_str.endswith(','):
+                        raise DSLSyntaxError(f"Malformed DSL at line {line_num}: Leading or trailing comma in arguments for {op_name}. Problematic line: '{line_content}'")
+                    if ",," in args_str:
+                        raise DSLSyntaxError(f"Malformed DSL at line {line_num}: Empty argument due to consecutive commas for {op_name}. Problematic line: '{line_content}'")
 
-        processed_args = []
-        # items[1:] are results from atom() method (actual values or var names)
-        for arg_val in items[1:]:
-            processed_args.append(arg_val)
+                    op_args = [arg.strip() for arg in args_str.split(',')]
+                    # After splitting, check if any resulting arg is empty, which means "arg1,,arg2" or "arg1, ,arg2"
+                    # This is already covered by ",," check if spaces around commas are stripped by split logic.
+                    # The list comprehension `[arg.strip() for arg in args_str.split(',')]` handles spaces around args.
+                    # An empty string between commas like "arg1,,arg2" becomes op_args = ['arg1', '', 'arg2'].
+                    # If empty arguments are disallowed:
+                    if any(not arg for arg in op_args if args_str.strip()): # Check only if args_str wasn't just whitespace
+                         raise DSLSyntaxError(f"Malformed DSL at line {line_num}: Empty argument string due to comma separation for {op_name}. Problematic line: '{line_content}'")
 
-        known_ops_arity = {"ADD": 2, "SUB": 2, "MUL": 2, "DIV": 2}
-        if op_name in known_ops_arity:
-            expected_arity = known_ops_arity[op_name]
-            if len(processed_args) != expected_arity:
-                raise DSLSemanticError(
-                    f"Operation '{op_name}' at line {op_name_token.line}, column {op_name_token.column} "
-                    f"expects {expected_arity} arguments, got {len(processed_args)}."
-                )
-        # print(f"DEBUG: [Transformer] operation: Name={op_name}, Args={processed_args}")
-        return {'op': op_name, 'args': processed_args} # Return the operation dictionary
+            # Ensure 'name' key is used as per the new specification for this subtask
+            parsed_ops.append({'name': op_name, 'args': op_args})
 
-    # value: SIGNED_NUMBER
-    @v_args(inline=True)
-    def value(self, number_token):
-        val_str = number_token.value
-        if '.' in val_str or 'e' in val_str.lower():
-            return float(val_str)
-        return int(val_str)
-
-    # atom: NAME | SIGNED_NUMBER
-    @v_args(inline=True)
-    def atom(self, token): # Token is either NAME or SIGNED_NUMBER
-        if token.type == 'SIGNED_NUMBER':
-            return self.value(token) # Process it like 'value' rule
-        return str(token) # For NAME, return its string value (variable name)
-
-    def NEWLINE(self, token):
-        return visitors.Discard # Discard newlines, they are just separators for grammar
-
-if __name__ == '__main__':
-    compiler = DSLCompiler()
-    example_code = """
-    VAR x = 10
-    VAR y = 20.5 # a comment
-    ADD x y
-    MUL x 2
-    # This is a full line comment
-    VAR z = -5
-    SUB z y
-    DIV x z
-    """
-    print(f"--- Parsing example code (New Transformer Strategy) ---")
-    try:
-        result = compiler.parse(example_code)
-        print("Parsed successfully:")
-        print(json.dumps(result, indent=2))
-    except (DSLSyntaxError, DSLSemanticError) as e:
-        print(f"Error: {e}")
-
-    print("\n--- Example empty input ---")
-    empty_code = ""
-    try:
-        result = compiler.parse(empty_code)
-        print("Parsed successfully (empty input):")
-        print(json.dumps(result, indent=2))
-    except (DSLSyntaxError, DSLSemanticError) as e:
-        print(f"Error: {e}")
-
-    print("\n--- Example only comments and newlines ---")
-    comments_only_code = """ # com1 \n #com2 \n """
-    try:
-        result = compiler.parse(comments_only_code)
-        print("Parsed successfully (comments and newlines only):")
-        print(json.dumps(result, indent=2))
-    except (DSLSyntaxError, DSLSemanticError) as e:
-        print(f"Error: {e}")
+        return {'ops': parsed_ops, 'vars': {}}
+```

@@ -1,3 +1,4 @@
+import json # Added import
 from virtual_layer.symbolic import ComputationGraph # For type hinting
 
 # Custom Exception
@@ -44,6 +45,38 @@ class PrimitiveCatalog:
         Returns an empty list if no primitives are registered for that op_name.
         """
         return self.primitives.get(op_name, [])
+
+    def load_from_json(self, filepath: str):
+        """
+        Loads primitives from a JSON file and registers them.
+        The JSON file should have op_names as keys and lists of primitive dicts as values.
+        Each primitive dict should contain 'id', 'steps', and 'cost_vector'.
+        The 'op_type' from the primitive_dict in the JSON will be used as op_name.
+        """
+        try:
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+            for op_name_key, primitives_list in data.items():
+                for primitive_data in primitives_list:
+                    # Ensure op_type from primitive_data matches the key if needed, or use op_name_key
+                    # For now, assume primitive_data includes 'op_type' which should match op_name_key
+                    # or that op_name_key is the definitive op_type.
+                    # The provided JSON has op_type inside primitive_data.
+                    self.register(
+                        op_name=primitive_data.get('op_type', op_name_key), # Prefer op_type in dict, fallback to key
+                        primitive_id=primitive_data['id'],
+                        steps=primitive_data['steps'],
+                        cost_vector=primitive_data['cost_vector']
+                    )
+        except FileNotFoundError:
+            # logger.error(f"Primitives file not found: {filepath}") # Requires logger setup if used here
+            print(f"Warning: Primitives file not found: {filepath}. Catalog may be empty.")
+        except json.JSONDecodeError:
+            # logger.error(f"Error decoding JSON from primitives file: {filepath}")
+            print(f"Warning: Error decoding JSON from {filepath}. Catalog may be empty.")
+        except KeyError as e:
+            # logger.error(f"Missing expected key {e} in primitives file: {filepath}")
+            print(f"Warning: Missing key in primitives data from {filepath}. Catalog may be incomplete.")
 
 
 class Optimizer:
@@ -128,7 +161,15 @@ class Optimizer:
                 # but as a safeguard:
                 raise OptimizationError(f"Could not select a best primitive for '{op_type}' (node {op_id}), though candidates existed.")
 
-            plan_sequence.append((best_primitive, min_score))
+            # Structure for plan_sequence entry:
+            plan_entry = {
+                'op_id': op_id, # From the graph
+                'op_type': op_type, # From the graph node
+                'op_args': node_attrs.get('args', []), # From the graph node
+                'selected_primitive': best_primitive, # From the catalog
+                'score': min_score
+            }
+            plan_sequence.append(plan_entry)
 
         return plan_sequence
 
@@ -160,8 +201,10 @@ if __name__ == '__main__':
     print(f"\n--- Optimizing with CPU-focused weights: {weights_cpu_focused} ---")
     try:
         plan_cpu = optimizer.optimize(comp_graph, weights_cpu_focused)
-        for primitive, score in plan_cpu:
-            print(f"Selected: {primitive['id']} (for op type, derived from primitive content), Score: {score:.2f}, Steps: {primitive['steps']}")
+        for entry in plan_cpu:
+            print(f"Op: {entry['op_type']}({entry['op_args']}), "
+                  f"Selected: {entry['selected_primitive']['id']}, Score: {entry['score']:.2f}, "
+                  f"Steps: {entry['selected_primitive']['steps']}")
     except OptimizationError as e:
         print(f"Optimization Error: {e}")
 
@@ -170,8 +213,10 @@ if __name__ == '__main__':
     print(f"\n--- Optimizing with Memory-focused weights: {weights_mem_focused} ---")
     try:
         plan_mem = optimizer.optimize(comp_graph, weights_mem_focused)
-        for primitive, score in plan_mem:
-            print(f"Selected: {primitive['id']}, Score: {score:.2f}, Steps: {primitive['steps']}")
+        for entry in plan_mem:
+            print(f"Op: {entry['op_type']}({entry['op_args']}), "
+                  f"Selected: {entry['selected_primitive']['id']}, Score: {entry['score']:.2f}, "
+                  f"Steps: {entry['selected_primitive']['steps']}")
     except OptimizationError as e:
         print(f"Optimization Error: {e}")
 

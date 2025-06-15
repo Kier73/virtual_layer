@@ -1,0 +1,14 @@
+{
+    "optimizer_weights": {
+        "time": 0.7321140239687801,
+        "cpu": 0.2,
+        "mem": 0.1,
+        "io": 0.1,
+        "quality": 0.0
+    },
+    "total_executions": 20,
+    "total_planned_cost": 136.1140239687801,
+    "total_simulated_duration": 134.13765125714536,
+    "sum_simulated_fidelity": 18.060514714751534,
+    "num_fidelity_samples": 20
+}

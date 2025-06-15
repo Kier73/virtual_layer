@@ -1,20 +1,21 @@
-// Grammar V6
-?start: (statement | NEWLINE)* // Sequence of statements or newlines
+// Grammar V12: Resolve Reduce/Reduce conflict in operation arguments
+start: (_NL | statement)*
 
-statement: assignment | operation | COMMENT // A comment can be a statement
+statement: assignment | operation | COMMENT
+assignment: "VAR" VAR_ID "=" value (_NL)?
+operation: OP_ID value* (_NL)? // Arguments are now only 'value' repeated
 
-assignment: "VAR" NAME "=" value
-operation: NAME atom* // atom* will stop at a NEWLINE if NEWLINE isn't ignored
+COMMENT: /#.*/
 
-value: SIGNED_NUMBER
-atom: NAME | SIGNED_NUMBER
+OP_ID: /[A-Z_][A-Z0-9_]*/
+VAR_ID: /[a-zA-Z_][a-zA-Z0-9_]*/
 
-%import common.CNAME -> NAME
-%import common.SIGNED_NUMBER
-%import common.WS
-%import common.NEWLINE
-%import common.SH_COMMENT -> COMMENT
+value: STRING | NUMBER | VAR_ID
 
-%ignore WS // Ignore horizontal whitespace
-// %ignore NEWLINE // NOT ignored
-// %ignore COMMENT // NOT ignored, COMMENT is a statement type
+%import common.ESCAPED_STRING -> STRING
+%import common.SIGNED_NUMBER -> NUMBER
+%import common.WS_INLINE
+%import common.NEWLINE -> _NL
+
+%ignore WS_INLINE
+%ignore COMMENT

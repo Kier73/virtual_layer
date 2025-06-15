@@ -1,262 +1,144 @@
 import pytest
-from virtual_layer.dsl import DSLCompiler, DSLSyntaxError, DSLSemanticError
+from virtual_layer.dsl import DSLCompiler, DSLSyntaxError
 
-# Fixture for the DSLCompiler instance
 @pytest.fixture
-def compiler():
-    return DSLCompiler(grammar_file="virtual_layer/dsl_grammar.lark")
+def known_ops_catalog():
+    return {"LOAD", "PROCESS", "SAVE", "NO_ARGS_OP", "MULTI_ARGS_OP"}
 
-def test_parse_single_variable_assignment_integer(compiler):
-    code = "VAR x = 10"
-    result = compiler.parse(code)
-    assert result['vars'] == {'x': 10}
-    assert result['ops'] == []
+@pytest.fixture
+def compiler(known_ops_catalog):
+    return DSLCompiler(catalog=known_ops_catalog)
 
-def test_parse_single_variable_assignment_float(compiler):
-    code = "VAR y = 20.5"
-    result = compiler.parse(code)
-    assert result['vars'] == {'y': 20.5}
-    assert result['ops'] == []
+# --- Tests for Successful Parsing ---
 
-def test_parse_single_variable_assignment_negative(compiler):
-    code = "VAR z = -5"
-    result = compiler.parse(code)
-    assert result['vars'] == {'z': -5}
-    assert result['ops'] == []
+def test_parse_empty_code(compiler):
+    assert compiler.parse("") == {'ops': [], 'vars': {}}
 
-def test_parse_single_operation(compiler):
-    code = "ADD x y"
-    result = compiler.parse(code)
-    assert result['ops'] == [{'op': 'ADD', 'args': ['x', 'y']}]
-    assert result['vars'] == {}
+def test_parse_only_comments_and_blank_lines(compiler):
+    code = """
+    # This is a comment
 
-def test_parse_operation_with_literal_number_args(compiler):
-    code = "MUL z 2"
-    result = compiler.parse(code)
-    assert result['ops'] == [{'op': 'MUL', 'args': ['z', 2]}]
-    assert result['vars'] == {}
+      # Another comment
+    """
+    assert compiler.parse(code) == {'ops': [], 'vars': {}}
 
-def test_parse_operation_with_float_literal_arg(compiler):
-    code = "DIV z 3.14"
+def test_parse_simple_op_no_args(compiler):
+    code = "NO_ARGS_OP"
     result = compiler.parse(code)
-    assert result['ops'] == [{'op': 'DIV', 'args': ['z', 3.14]}]
-    assert result['vars'] == {}
+    assert result['ops'] == [{'name': 'NO_ARGS_OP', 'args': []}]
+
+def test_parse_simple_op_empty_parens(compiler):
+    code = "NO_ARGS_OP()"
+    result = compiler.parse(code)
+    assert result['ops'] == [{'name': 'NO_ARGS_OP', 'args': []}]
+
+def test_parse_simple_op_empty_parens_with_spaces(compiler):
+    code = "NO_ARGS_OP( )"
+    result = compiler.parse(code)
+    assert result['ops'] == [{'name': 'NO_ARGS_OP', 'args': []}] # Empty arg string becomes []
+
+def test_parse_op_with_single_arg(compiler):
+    code = "LOAD(file.csv)"
+    result = compiler.parse(code)
+    assert result['ops'] == [{'name': 'LOAD', 'args': ['file.csv']}]
+
+def test_parse_op_with_multiple_args(compiler):
+    code = "PROCESS(data, transform_A, mode_fast)"
+    result = compiler.parse(code)
+    assert result['ops'] == [{'name': 'PROCESS', 'args': ['data', 'transform_A', 'mode_fast']}]
+
+def test_parse_op_with_spaces_around_args_and_commas(compiler):
+    code = "LOAD(  file.csv  ,  table_name   )"
+    result = compiler.parse(code)
+    assert result['ops'] == [{'name': 'LOAD', 'args': ['file.csv', 'table_name']}]
+
+def test_parse_op_with_trailing_comment(compiler):
+    code = "SAVE(output.dat) # Save the data"
+    result = compiler.parse(code)
+    assert result['ops'] == [{'name': 'SAVE', 'args': ['output.dat']}]
+
+def test_parse_op_with_leading_whitespace_and_comment(compiler):
+    code = "  SAVE(output.dat) # Save the data"
+    result = compiler.parse(code)
+    assert result['ops'] == [{'name': 'SAVE', 'args': ['output.dat']}]
 
 def test_parse_multi_line_script(compiler):
     code = """
-    VAR a = 100
-    VAR b = 200.5
-    ADD a b
-    SUB b 50.0
+    # Script start
+    LOAD(input.txt)
+    PROCESS(input.txt, temp_table)
+      # Indented comment
+    SAVE(temp_table, output.txt) # Save final
     """
     result = compiler.parse(code)
-    assert result['vars'] == {'a': 100, 'b': 200.5}
     assert result['ops'] == [
-        {'op': 'ADD', 'args': ['a', 'b']},
-        {'op': 'SUB', 'args': ['b', 50.0]}
+        {'name': 'LOAD', 'args': ['input.txt']},
+        {'name': 'PROCESS', 'args': ['input.txt', 'temp_table']},
+        {'name': 'SAVE', 'args': ['temp_table', 'output.txt']}
     ]
 
-def test_parse_with_comments(compiler):
-    code = """
-    # This is a full line comment
-    VAR x = 10 # Assign 10 to x
-    ADD x 5    # Add 5 to x
-    """
+def test_parse_args_with_special_chars_if_regex_allows(compiler):
+    # The regex for op_name is [a-zA-Z_][a-zA-Z0-9_]*
+    # The args_str is (.*?), so it captures anything. Arg splitting is by comma.
+    code = 'PROCESS(arg_with-hyphen, "quoted string arg", path/to/file)'
     result = compiler.parse(code)
-    assert result['vars'] == {'x': 10}
-    assert result['ops'] == [{'op': 'ADD', 'args': ['x', 5]}]
+    assert result['ops'] == [{
+        'name': 'PROCESS',
+        'args': ['arg_with-hyphen', '"quoted string arg"', 'path/to/file']
+    }]
 
-def test_empty_input(compiler):
-    code = ""
+def test_parse_trailing_comma_in_args(compiler):
+    # "OP(arg1,)" -> args_str = "arg1," -> op_args = ['arg1', '']
+    code = "LOAD(item1,)"
     result = compiler.parse(code)
-    assert result['vars'] == {}
-    assert result['ops'] == []
+    assert result['ops'] == [{'name': 'LOAD', 'args': ['item1', '']}]
 
-def test_only_comments(compiler):
-    code = """
-    # comment 1
-    # comment 2
-    """
+def test_parse_empty_arg_in_middle(compiler):
+    # "OP(arg1,,arg2)" -> args_str = "arg1,,arg2" -> op_args = ['arg1', '', 'arg2']
+    code = "MULTI_ARGS_OP(item1,,item3)"
     result = compiler.parse(code)
-    assert result['vars'] == {}
-    assert result['ops'] == []
+    assert result['ops'] == [{'name': 'MULTI_ARGS_OP', 'args': ['item1', '', 'item3']}]
 
-# --- Test for Expected Errors ---
 
-def test_error_invalid_operation_name(compiler):
-    # Lark might catch this as an UnexpectedToken if INVALID_OP is not a valid NAME format
-    # or if it's not defined in the grammar in a way that it can be identified as an "unknown operation"
-    # For now, the current grammar would likely treat INVALID_OP as a generic operation name.
-    # Semantic analysis for "known" ops would be a layer on top or specific rules.
-    # The current DSLSemanticError for arity is a good example of semantic check.
-    # Let's assume for now any valid NAME token can be an op name.
-    # If we want to restrict op names, the grammar or transformer logic would need adjustment.
-    pass # Covered by arity tests for now, and general syntax errors
+# --- Tests for Syntax Errors ---
 
-def test_error_incorrect_number_of_arguments_add(compiler):
-    code = "VAR val = 1\nADD val" # ADD expects 2 arguments
-    with pytest.raises(DSLSemanticError) as excinfo:
+def test_error_unknown_operation(compiler):
+    code = "UNKNOWN_OP(param)"
+    with pytest.raises(DSLSyntaxError, match="Line 1: Unknown operation: 'UNKNOWN_OP'"):
         compiler.parse(code)
-    assert "Operation 'ADD' at line 2, column 1 expects 2 arguments, got 1" in str(excinfo.value)
 
-def test_error_incorrect_number_of_arguments_mul(compiler):
-    code = "VAR val = 1\nMUL val 2 3" # MUL expects 2 arguments
-    with pytest.raises(DSLSemanticError) as excinfo:
+def test_error_malformed_operation_no_parens_for_args(compiler):
+    # This regex expects args to be within () if present after op_name
+    code = "LOAD file.csv"
+    with pytest.raises(DSLSyntaxError, match="Line 1: Malformed operation or unsupported syntax: 'LOAD file.csv'"):
         compiler.parse(code)
-    assert "Operation 'MUL' at line 2, column 1 expects 2 arguments, got 3" in str(excinfo.value)
 
-def test_error_syntax_missing_equals_in_assignment(compiler):
-    code = "VAR x 10"
-    with pytest.raises(DSLSyntaxError) as excinfo:
+def test_error_malformed_parentheses_unmatched_open(compiler):
+    code = "LOAD(file.csv"
+    with pytest.raises(DSLSyntaxError, match=r"Line 1: Malformed operation or unsupported syntax: 'LOAD\(file.csv'"):
         compiler.parse(code)
-    assert "Syntax error" in str(excinfo.value) # Lark's error message might vary
 
-def test_error_syntax_invalid_characters_in_var_name(compiler):
-    code = "VAR x@y = 5" # '@' is not allowed in NAME by default CNAME
-    with pytest.raises(DSLSyntaxError) as excinfo:
+def test_error_malformed_parentheses_unmatched_close(compiler):
+    code = "LOAD file.csv)"
+    with pytest.raises(DSLSyntaxError, match=r"Line 1: Malformed operation or unsupported syntax: 'LOAD file.csv\)'"):
         compiler.parse(code)
-    assert "Failed to parse DSL code: No terminal matches '@'" in str(excinfo.value)
 
-def test_error_syntax_incomplete_operation(compiler):
-    code = "ADD x" # Missing second arg, but grammar allows it, transformer catches it
-    with pytest.raises(DSLSemanticError) as excinfo: # Arity error
+def test_error_var_assignment_not_supported(compiler):
+    code = "VAR x = 10"
+    with pytest.raises(DSLSyntaxError, match="Line 1: VAR assignments are not supported by this DSL version: 'VAR x = 10'"):
         compiler.parse(code)
-    assert "Operation 'ADD' at line 1, column 1 expects 2 arguments, got 1" in str(excinfo.value)
 
-def test_error_syntax_value_is_not_number_or_var(compiler):
-    code = "VAR y = abc" # 'abc' is not a number, grammar expects SIGNED_NUMBER for value
-    with pytest.raises(DSLSyntaxError) as excinfo:
+def test_error_op_name_invalid_start_char(compiler):
+    code = "1LOAD(file.csv)"
+    with pytest.raises(DSLSyntaxError, match=r"Line 1: Malformed operation or unsupported syntax: '1LOAD\(file.csv\)'"):
         compiler.parse(code)
-    assert "Syntax error" in str(excinfo.value)
 
-def test_error_unknown_token_at_start(compiler):
-    code = "! VAR x = 5"
-    with pytest.raises(DSLSyntaxError) as excinfo:
+def test_error_op_name_with_invalid_chars(compiler):
+    code = "LOAD-DATA(file.csv)"
+    with pytest.raises(DSLSyntaxError, match=r"Line 1: Malformed operation or unsupported syntax: 'LOAD-DATA\(file.csv\)'"):
         compiler.parse(code)
-    assert "Failed to parse DSL code: No terminal matches '!'" in str(excinfo.value)
 
-def test_intent_dict_structure(compiler):
-    code = """
-    VAR my_var = 123.45
-    PROCESS my_var 0.5
-    """
-    result = compiler.parse(code)
-    assert 'vars' in result
-    assert 'ops' in result
-    assert isinstance(result['vars'], dict)
-    assert isinstance(result['ops'], list)
-    if result['ops']:
-        for op in result['ops']:
-            assert 'op' in op
-            assert 'args' in op
-            assert isinstance(op['op'], str)
-            assert isinstance(op['args'], list)
-
-def test_parse_multiple_assignments(compiler):
-    code = """
-    VAR x = 1
-    VAR y = 2.0
-    VAR z = -3
-    """
-    result = compiler.parse(code)
-    assert result['vars'] == {'x': 1, 'y': 2.0, 'z': -3}
-    assert result['ops'] == []
-
-def test_parse_multiple_operations(compiler):
-    code = """
-    OP1 a b
-    OP2 c 10
-    OP3 d e 5.5
-    """
-    result = compiler.parse(code)
-    assert result['vars'] == {}
-    assert result['ops'] == [
-        {'op': 'OP1', 'args': ['a', 'b']},
-        {'op': 'OP2', 'args': ['c', 10]},
-        {'op': 'OP3', 'args': ['d', 'e', 5.5]}
-    ]
-
-def test_parse_mixed_vars_and_ops_order(compiler):
-    code = """
-    OP1 x y
-    VAR val = 10
-    OP2 val z
-    VAR another = 20.2
-    """
-    result = compiler.parse(code)
-    assert result['vars'] == {'val': 10, 'another': 20.2}
-    assert result['ops'] == [
-        {'op': 'OP1', 'args': ['x', 'y']},
-        {'op': 'OP2', 'args': ['val', 'z']}
-    ]
-
-def test_newline_handling(compiler):
-    code = "VAR x = 1\n\nVAR y = 2\nOP1 x y\n"
-    result = compiler.parse(code)
-    assert result['vars'] == {'x':1, 'y':2}
-    assert result['ops'] == [{'op':'OP1', 'args':['x','y']}]
-
-def test_line_ending_with_comment(compiler):
-    code = "VAR x = 10 # comment here"
-    result = compiler.parse(code)
-    assert result['vars'] == {'x':10}
-    assert result['ops'] == []
-
-    code2 = "OP1 x y # another comment"
-    result2 = compiler.parse(code2)
-    assert result2['vars'] == {}
-    assert result2['ops'] == [{'op':'OP1', 'args':['x','y']}]
-
-def test_error_assignment_to_keyword_if_restricted(compiler):
-    # Current grammar allows VAR as a variable name.
-    # If "VAR" should be a reserved keyword and not allowed as a variable name,
-    # the grammar for NAME would need to be adjusted, or a check added in the Transformer.
-    # For now, this is not an error.
-    code = "VAR VAR = 5"
-    result = compiler.parse(code)
-    assert result['vars']['VAR'] == 5
-
-    # However, "VAR VAR = VAR" would be an op "VAR" with args "VAR", "=" and "VAR"
-    # which the current grammar for operation might parse, but would be semantically odd.
-    # The current grammar `assignment: "VAR" NAME "=" value` is strict.
-    pass
-
-def test_error_var_redefinition(compiler):
-    # The current parser allows redefinition, simply overwriting the value.
-    # This is often acceptable behavior.
-    code = """
-    VAR x = 1
-    VAR x = 2
-    """
-    result = compiler.parse(code)
-    assert result['vars']['x'] == 2
-    # If redefinition should be an error, this check would go into the DSLTransformer's assignment method.
-    pass
-
-def test_error_using_undefined_variable_in_op_semantic(compiler):
-    # The current parser does not check for undefined variables during parsing.
-    # This is typically a semantic check for a later stage (e.g., execution or further compilation).
-    # The `parse` method's role is syntactic correctness according to the grammar.
-    code = "ADD undefined_var 5"
-    result = compiler.parse(code) # This will parse fine.
-    assert result['ops'] == [{'op': 'ADD', 'args': ['undefined_var', 5]}]
-    pass
-
-# Consider adding tests for specific Lark errors if needed, though covered by DSLSyntaxError generally.
-# e.g. UnexpectedCharacters
-# from lark.exceptions import UnexpectedCharacters
-# def test_lark_specific_error_example(compiler):
-#     code = "VAR x = £5" # Assuming £ is not in the grammar at all
-#     with pytest.raises(DSLSyntaxError): # Or could be UnexpectedCharacters if not caught by parser rule
-#         compiler.parse(code)
-
-# A test for an operation that is not in the "known list" for arity check
-def test_unknown_operation_arity(compiler):
-    code = "MY_CUSTOM_OP arg1 arg2 arg3"
-    result = compiler.parse(code)
-    # Since MY_CUSTOM_OP is not in the hardcoded list ['ADD', 'MUL', 'SUB', 'DIV'],
-    # no arity check is performed by the current transformer logic for it.
-    assert result['ops'] == [{'op': 'MY_CUSTOM_OP', 'args': ['arg1', 'arg2', 'arg3']}]
-    assert result['vars'] == {}
-    # If all operations must be pre-defined with their arities, the transformer logic would need to change.
-    pass
+def test_error_just_args_no_op_name(compiler):
+    code = "(file.csv)"
+    with pytest.raises(DSLSyntaxError, match=r"Line 1: Malformed operation or unsupported syntax: '\(file.csv\)'"):
+        compiler.parse(code)

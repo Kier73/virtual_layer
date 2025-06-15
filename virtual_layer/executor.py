@@ -12,15 +12,15 @@ if not logging.getLogger().hasHandlers():
 
 logger = logging.getLogger(__name__)
 
-def actuate_sequence(plan_sequence: List[Tuple[Dict[str, Any], float]],
+def actuate_sequence(plan_sequence: List[Dict[str, Any]],  # Changed from List[Tuple[...]]
                      initial_state: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """
     Simulates the actuation of a sequence of primitives.
 
     Args:
-        plan_sequence (List[Tuple[Dict, float]]): A list of tuples, where each tuple
-            contains a primitive dictionary and its pre-calculated cost_score.
-            Primitive dict expected keys: 'id', 'op_type', 'args' (and others like 'steps', 'cost_vector').
+        plan_sequence (List[Dict[str, Any]]): A list of dictionaries, where each dict contains
+            details of the operation and the selected primitive. Expected keys:
+            'op_type', 'op_args', 'selected_primitive' (dict with 'id'), 'score'.
         initial_state (Dict): The initial state of the system.
 
     Returns:
@@ -33,10 +33,12 @@ def actuate_sequence(plan_sequence: List[Tuple[Dict[str, Any], float]],
     if not plan_sequence:
         return current_state, collected_telemetry
 
-    for primitive_dict, cost_score in plan_sequence:
-        primitive_id = primitive_dict.get('id', 'unknown_primitive')
-        op_type = primitive_dict.get('op_type', 'UNKNOWN_OP_TYPE')
-        args = primitive_dict.get('args', [])
+    for plan_entry in plan_sequence:
+        op_type = plan_entry.get('op_type', 'UNKNOWN_OP_TYPE')
+        args = plan_entry.get('op_args', []) # Use op_args from the plan_entry
+        selected_primitive = plan_entry.get('selected_primitive', {})
+        primitive_id = selected_primitive.get('id', 'unknown_primitive')
+        cost_score = plan_entry.get('score', 0.0) # This is the planned_cost_score
 
         logger.info(f"Executing primitive: {primitive_id} (OpType: {op_type}, Args: {args})")
 
@@ -121,15 +123,21 @@ if __name__ == '__main__':
     logging.getLogger().handlers[0].setLevel(logging.INFO)
 
     sample_plan = [
-        ({'id': 'P_LOAD_data1', 'op_type': 'LOAD', 'args': ['data1'],
-          'steps': ['load data1'], 'cost_vector': {'time': 10}},
-         10.0), # primitive_dict, cost_score
-        ({'id': 'P_ADD_data1_const5', 'op_type': 'ADD', 'args': ['data1', 5],
-          'steps': ['add 5 to data1'], 'cost_vector': {'time': 2}},
-         2.0),
-        ({'id': 'P_SAVE_result', 'op_type': 'SAVE', 'args': ['final_result'],
-          'steps': ['save final_result'], 'cost_vector': {'time': 5}},
-         5.0)
+        {
+            'op_type': 'LOAD', 'op_args': ['data1'],
+            'selected_primitive': {'id': 'P_LOAD_data1', 'steps': ['load data1'], 'cost_vector': {'time': 10}},
+            'score': 10.0
+        },
+        {
+            'op_type': 'ADD', 'op_args': ['data1', 5], # This arg structure might need refinement based on DSL
+            'selected_primitive': {'id': 'P_ADD_data1_const5', 'steps': ['add 5 to data1'], 'cost_vector': {'time': 2}},
+            'score': 2.0
+        },
+        {
+            'op_type': 'SAVE', 'op_args': ['final_result'],
+            'selected_primitive': {'id': 'P_SAVE_result', 'steps': ['save final_result'], 'cost_vector': {'time': 5}},
+            'score': 5.0
+        }
     ]
 
     initial_system_state = {'user_id': 123, 'accumulator': 0}

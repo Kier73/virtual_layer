@@ -4,13 +4,14 @@ version = "0.1.0"
 description = "A project demonstrating a virtual layer for something."
 dependencies = [
     "numpy",
-    "networkx",
+    "networkx", # Was already present
     "pytest",
-    "lark-parser",
     "flake8",
     "black",
     "isort",
     "scikit-learn",
+    "pygraphviz" # Added
+    # "lark-parser", # Removed
 ]
 
 [tool.black]
