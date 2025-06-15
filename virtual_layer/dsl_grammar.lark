@@ -1,0 +1,20 @@
+// Grammar V6
+?start: (statement | NEWLINE)* // Sequence of statements or newlines
+
+statement: assignment | operation | COMMENT // A comment can be a statement
+
+assignment: "VAR" NAME "=" value
+operation: NAME atom* // atom* will stop at a NEWLINE if NEWLINE isn't ignored
+
+value: SIGNED_NUMBER
+atom: NAME | SIGNED_NUMBER
+
+%import common.CNAME -> NAME
+%import common.SIGNED_NUMBER
+%import common.WS
+%import common.NEWLINE
+%import common.SH_COMMENT -> COMMENT
+
+%ignore WS // Ignore horizontal whitespace
+// %ignore NEWLINE // NOT ignored
+// %ignore COMMENT // NOT ignored, COMMENT is a statement type
