@@ -1,210 +1,131 @@
-import abc
 import numpy as np
-from sklearn.linear_model import BayesianRidge
+from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.preprocessing import StandardScaler
-from sklearn.utils.validation import check_is_fitted # For checking if model/scaler is fitted
+from sklearn.pipeline import Pipeline
+from sklearn.utils.validation import check_is_fitted # To check if pipeline steps are fitted
 
-class SurrogateModel(abc.ABC):
-    @abc.abstractmethod
-    def train(self, features: np.ndarray, targets_cost: np.ndarray, targets_fidelity: np.ndarray):
-        """
-        Trains the surrogate model(s).
+class SurrogateModel:
+    def __init__(self, name: str):
+        self.name = name
+        self.cost_model: Optional[Pipeline] = None
+        self.fidelity_model: Optional[Pipeline] = None
+        self.trained = False
+        self._num_features_trained = 0 # To store the number of features used in training
 
-        Args:
-            features (np.ndarray): Input features for training.
-            targets_cost (np.ndarray): Cost target values.
-            targets_fidelity (np.ndarray): Fidelity target values.
-        """
-        pass
+    def train(self, data: np.ndarray):
+        if not isinstance(data, np.ndarray):
+            raise TypeError("Input data must be a NumPy array.")
+        if data.ndim != 2:
+            raise ValueError("Input data must be a 2D array.")
+        if data.shape[0] == 0: # Check for empty data (no samples)
+            raise ValueError("Input data cannot be empty (no samples).")
+        if data.shape[1] < 3:
+            raise ValueError(f"Input data must have at least 3 columns (features, cost, fidelity), got {data.shape[1]}.")
 
-    @abc.abstractmethod
-    def predict_cost(self, features: np.ndarray) -> np.ndarray:
-        """
-        Predicts cost values for given features.
+        num_features = data.shape[1] - 2
+        self._num_features_trained = num_features # Store for prediction checks
 
-        Args:
-            features (np.ndarray): Input features for prediction.
+        X = data[:, :num_features]
+        y_cost = data[:, num_features]
+        y_fidelity = data[:, num_features + 1]
 
-        Returns:
-            np.ndarray: Predicted cost values.
-        """
-        pass
+        # Ensure X is 2D. If num_features is 1, X will be (n_samples, 1) already due to slicing.
+        # If num_features is 0 (data.shape[1] == 2, which is caught by data.shape[1] < 3),
+        # this would mean X = data[:, :0] which is valid but perhaps not what's intended for typical models.
+        # However, the check data.shape[1] < 3 ensures num_features >= 1.
 
-    @abc.abstractmethod
-    def predict_fidelity(self, features: np.ndarray) -> np.ndarray:
-        """
-        Predicts fidelity values for given features.
+        self.cost_model = Pipeline([
+            ('scaler', StandardScaler()),
+            ('regressor', LinearRegression())
+        ])
 
-        Args:
-            features (np.ndarray): Input features for prediction.
+        self.fidelity_model = Pipeline([
+            ('scaler', StandardScaler()),
+            ('regressor', Ridge()) # Using Ridge for fidelity as specified
+        ])
 
-        Returns:
-            np.ndarray: Predicted fidelity values.
-        """
-        pass
+        self.cost_model.fit(X, y_cost)
+        self.fidelity_model.fit(X, y_fidelity)
+        self.trained = True
 
+    def _check_trained_and_features(self, latent: np.ndarray):
+        if not self.trained or self.cost_model is None or self.fidelity_model is None:
+            # Check self.cost_model and self.fidelity_model for mypy, though self.trained should suffice
+            raise RuntimeError("Surrogate model not trained")
 
-class BasicSklearnSurrogate(SurrogateModel):
-    def __init__(self, scale_targets: bool = False): # Added option to control target scaling
-        self.cost_model = BayesianRidge()
-        self.fidelity_model = BayesianRidge()
+        # Check if the pipeline steps are fitted (more robust than just self.trained flag)
+        check_is_fitted(self.cost_model.named_steps['scaler'])
+        check_is_fitted(self.cost_model.named_steps['regressor'])
+        check_is_fitted(self.fidelity_model.named_steps['scaler'])
+        check_is_fitted(self.fidelity_model.named_steps['regressor'])
 
-        self.feature_scaler = StandardScaler()
+        if not isinstance(latent, np.ndarray):
+            raise TypeError("Input latent features must be a NumPy array.")
 
-        self.scale_targets = scale_targets
-        if self.scale_targets:
-            self.cost_target_scaler = StandardScaler()
-            self.fidelity_target_scaler = StandardScaler()
-        else:
-            self.cost_target_scaler = None
-            self.fidelity_target_scaler = None
+        # Use the stored _num_features_trained for consistent checking
+        expected_features = self._num_features_trained
 
-        self.is_trained = False
-
-    def train(self, features: np.ndarray, targets_cost: np.ndarray, targets_fidelity: np.ndarray):
-        if features.ndim == 1:
-            features = features.reshape(-1, 1)
-        if targets_cost.ndim == 1:
-            targets_cost_reshaped = targets_cost.reshape(-1, 1)
-        else:
-            targets_cost_reshaped = targets_cost
-
-        if targets_fidelity.ndim == 1:
-            targets_fidelity_reshaped = targets_fidelity.reshape(-1, 1)
-        else:
-            targets_fidelity_reshaped = targets_fidelity
-
-        # Fit and transform features
-        scaled_features = self.feature_scaler.fit_transform(features)
-
-        # Prepare targets
-        processed_targets_cost = targets_cost_reshaped
-        if self.scale_targets and self.cost_target_scaler:
-            processed_targets_cost = self.cost_target_scaler.fit_transform(targets_cost_reshaped)
-
-        processed_targets_fidelity = targets_fidelity_reshaped
-        if self.scale_targets and self.fidelity_target_scaler:
-            processed_targets_fidelity = self.fidelity_target_scaler.fit_transform(targets_fidelity_reshaped)
-
-        # Train models (scikit-learn expects 1D targets for these models)
-        self.cost_model.fit(scaled_features, processed_targets_cost.ravel())
-        self.fidelity_model.fit(scaled_features, processed_targets_fidelity.ravel())
-
-        self.is_trained = True
-
-    def _check_is_trained(self):
-        if not self.is_trained:
-            raise RuntimeError("Surrogate model has not been trained yet. Call train() first.")
-        # Optionally check if scalers and models are fitted using check_is_fitted
-        # from sklearn.utils.validation, though self.is_trained flag mostly covers this.
-        check_is_fitted(self.feature_scaler)
-        check_is_fitted(self.cost_model)
-        check_is_fitted(self.fidelity_model)
-        if self.scale_targets:
-            if self.cost_target_scaler: check_is_fitted(self.cost_target_scaler)
-            if self.fidelity_target_scaler: check_is_fitted(self.fidelity_target_scaler)
+        # Handle latent being a 1D array for a single sample with multiple features,
+        # or a 1D array for multiple samples if n_features_in_ is 1.
+        if latent.ndim == 1:
+            if expected_features == 1 and latent.size > 1: # multiple samples, 1 feature each
+                if latent.size != expected_features : # This check is for single sample (1,N) vs (N)
+                     pass # Will be reshaped to (latent.size, 1)
+            elif latent.size != expected_features: # Single sample (N) vs expected N features
+                 raise ValueError(f"Input latent vector has {latent.size} features, but model expects {expected_features}.")
+        elif latent.ndim == 2: # Batch of samples
+            if latent.shape[1] != expected_features:
+                 raise ValueError(f"Input latent vector has {latent.shape[1]} features per sample, but model expects {expected_features}.")
+        else: # Wrong number of dimensions
+            raise ValueError(f"Input latent vector must be 1D or 2D, got {latent.ndim}D.")
 
 
-    def predict_cost(self, features: np.ndarray) -> np.ndarray:
-        self._check_is_trained()
+    def predict_cost(self, latent: np.ndarray) -> float: # Prompt specifies -> float (single prediction)
+        self._check_trained_and_features(latent)
 
-        # Reshape features if necessary to be 2D
-        if features.ndim == 1:
-            if self.feature_scaler.n_features_in_ == 1:
-                # Input is 1D array, scaler expects 1 feature: treat as (n_samples, 1)
-                features = features.reshape(-1, 1)
+        # Reshape latent to 2D (1, n_features) if it's a single 1D sample
+        # or (n_samples, 1) if it's multiple 1D samples for a single-feature model.
+        if latent.ndim == 1:
+            if self._num_features_trained == 1:
+                latent_reshaped = latent.reshape(-1, 1)
+            else: # Single sample with multiple features
+                latent_reshaped = latent.reshape(1, -1)
+        else: # Already 2D
+            latent_reshaped = latent
+
+        try:
+            prediction = self.cost_model.predict(latent_reshaped) # type: ignore
+        except Exception as e:
+            raise RuntimeError(f"Error during cost prediction: {e}")
+
+        # If multiple samples were passed in latent_reshaped (e.g. for a 1-feature model)
+        # the prompt implies predict_cost returns a single float.
+        # This might mean it's intended for single sample predictions at a time,
+        # or the return type hint in the prompt is for the common case of one sample.
+        # For now, returning the first prediction if multiple were made.
+        return float(prediction[0])
+
+
+    def predict_fidelity(self, latent: np.ndarray) -> float: # Prompt specifies -> float
+        if not self.trained or self.cost_model is None or self.fidelity_model is None:
+            # Fidelity model might not be trained if it's optional or trained separately
+            # Prompt says "if not self.trained: return 1.0" - this implies a default
+            # if the whole surrogate isn't trained.
+            return 1.0 # Default fidelity if not trained
+
+        self._check_trained_and_features(latent) # Will raise if not trained
+
+        if latent.ndim == 1:
+            if self._num_features_trained == 1:
+                latent_reshaped = latent.reshape(-1, 1)
             else:
-                # Input is 1D array, scaler expects N features: treat as (1, N) (single sample)
-                features = features.reshape(1, -1)
+                latent_reshaped = latent.reshape(1, -1)
+        else:
+            latent_reshaped = latent
 
-        scaled_features = self.feature_scaler.transform(features)
-        predictions = self.cost_model.predict(scaled_features) # Predict returns 1D array
-
-        if self.scale_targets and self.cost_target_scaler:
-            # Inverse transform expects 2D array, predict gives 1D
-            predictions_reshaped = predictions.reshape(-1, 1)
-            predictions = self.cost_target_scaler.inverse_transform(predictions_reshaped).ravel()
-
-        return predictions
-
-    def predict_fidelity(self, features: np.ndarray) -> np.ndarray:
-        self._check_is_trained()
-
-        # Reshape features if necessary to be 2D
-        if features.ndim == 1:
-            if self.feature_scaler.n_features_in_ == 1:
-                # Input is 1D array, scaler expects 1 feature: treat as (n_samples, 1)
-                features = features.reshape(-1, 1)
-            else:
-                # Input is 1D array, scaler expects N features: treat as (1, N) (single sample)
-                features = features.reshape(1, -1)
-
-        scaled_features = self.feature_scaler.transform(features)
-        predictions = self.fidelity_model.predict(scaled_features)
-
-        if self.scale_targets and self.fidelity_target_scaler:
-            predictions_reshaped = predictions.reshape(-1, 1)
-            predictions = self.fidelity_target_scaler.inverse_transform(predictions_reshaped).ravel()
-
-        return predictions
-
-if __name__ == '__main__':
-    # Example Usage
-    # Generate some synthetic data
-    rng = np.random.RandomState(0)
-    n_samples, n_features = 100, 3
-    X = rng.rand(n_samples, n_features)
-
-    # Simple linear relationships for cost and fidelity
-    true_cost_coeffs = np.array([2.0, 0.5, -1.0])
-    true_fidelity_coeffs = np.array([-0.3, 0.1, 0.5])
-
-    y_cost = np.dot(X, true_cost_coeffs) + rng.randn(n_samples) * 0.1
-    y_fidelity = 0.8 + np.dot(X, true_fidelity_coeffs) + rng.randn(n_samples) * 0.05
-    # Ensure fidelity is generally within a certain range, e.g., [0, 1] if it represents that
-    y_fidelity = np.clip(y_fidelity, 0, 1)
-
-    # Instantiate and train the surrogate model
-    surrogate_no_target_scaling = BasicSklearnSurrogate(scale_targets=False)
-    print("Training surrogate without target scaling...")
-    surrogate_no_target_scaling.train(X, y_cost, y_fidelity)
-    print("Training complete.")
-
-    surrogate_with_target_scaling = BasicSklearnSurrogate(scale_targets=True)
-    print("\nTraining surrogate with target scaling...")
-    surrogate_with_target_scaling.train(X, y_cost, y_fidelity)
-    print("Training complete.")
-
-    # Make predictions
-    X_test = rng.rand(10, n_features)
-
-    print("\n--- Predictions (no target scaling) ---")
-    cost_preds_no_scale = surrogate_no_target_scaling.predict_cost(X_test)
-    fidelity_preds_no_scale = surrogate_no_target_scaling.predict_fidelity(X_test)
-    for i in range(5): # Print first 5 test predictions
-        print(f"Sample {i}: Predicted Cost={cost_preds_no_scale[i]:.2f}, Predicted Fidelity={fidelity_preds_no_scale[i]:.2f}")
-
-    print("\n--- Predictions (with target scaling) ---")
-    cost_preds_scale = surrogate_with_target_scaling.predict_cost(X_test)
-    fidelity_preds_scale = surrogate_with_target_scaling.predict_fidelity(X_test)
-    for i in range(5):
-        print(f"Sample {i}: Predicted Cost={cost_preds_scale[i]:.2f}, Predicted Fidelity={fidelity_preds_scale[i]:.2f}")
-
-    # Test single sample prediction
-    single_sample = X[0, :]
-    print(f"\n--- Single sample prediction (features: {single_sample}) ---")
-    cost_single_no_scale = surrogate_no_target_scaling.predict_cost(single_sample)
-    fidelity_single_no_scale = surrogate_no_target_scaling.predict_fidelity(single_sample)
-    print(f"No target scaling: Cost={cost_single_no_scale[0]:.2f}, Fidelity={fidelity_single_no_scale[0]:.2f}")
-
-    cost_single_scale = surrogate_with_target_scaling.predict_cost(single_sample)
-    fidelity_single_scale = surrogate_with_target_scaling.predict_fidelity(single_sample)
-    print(f"With target scaling: Cost={cost_single_scale[0]:.2f}, Fidelity={fidelity_single_scale[0]:.2f}")
-
-    # Example of trying to predict before training
-    fresh_surrogate = BasicSklearnSurrogate()
-    try:
-        print("\n--- Attempting prediction before training (should fail) ---")
-        fresh_surrogate.predict_cost(X_test)
-    except RuntimeError as e:
-        print(f"Caught expected error: {e}")
+        try:
+            prediction = self.fidelity_model.predict(latent_reshaped) # type: ignore
+        except Exception as e:
+            raise RuntimeError(f"Error during fidelity prediction: {e}")
+        return float(prediction[0]) # Return first prediction if batch
+```
